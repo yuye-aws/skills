@@ -178,7 +178,7 @@ public class RCATool implements Tool {
             case "_cluster/allocation/explain":
                 ClusterAllocationExplainRequest request = new ClusterAllocationExplainRequest();
                 request.setIndex(parameters.get("index"));
-                request.setPrimary(true);
+                request.setPrimary(parameters.getOrDefault("alert_type", "").equals("CLUSTER_RED"));
                 request.setShard(0);
                 try {
                     // TODO: need to be optimized to use listener to avoid block wait
