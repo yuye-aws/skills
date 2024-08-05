@@ -5,6 +5,8 @@
 
 package org.opensearch.agent.tools;
 
+import java.io.IOException;
+import java.util.HashMap;
 import static org.apache.commons.text.StringEscapeUtils.unescapeJson;
 
 import java.util.ArrayList;
@@ -27,6 +29,7 @@ import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainRe
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainResponse;
 import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.agent.tools.utils.ClusterStatsUtil;
+import org.opensearch.agent.tools.utils.RCADoc;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.routing.allocation.NodeAllocationResult;
 import org.opensearch.cluster.routing.allocation.decider.Decision;
@@ -44,11 +47,11 @@ import org.opensearch.ml.common.spi.tools.ToolAnnotation;
 import org.opensearch.ml.common.transport.MLTaskResponse;
 import org.opensearch.ml.common.transport.prediction.MLPredictionTaskAction;
 import org.opensearch.ml.common.transport.prediction.MLPredictionTaskRequest;
-import org.opensearch.ml.common.utils.StringUtils;
 
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.log4j.Log4j2;
+import org.opensearch.ml.common.utils.StringUtils;
 
 @Log4j2
 @Setter
