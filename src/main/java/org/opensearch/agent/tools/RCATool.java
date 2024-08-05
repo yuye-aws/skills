@@ -5,11 +5,8 @@
 
 package org.opensearch.agent.tools;
 
-import static org.apache.commons.text.StringEscapeUtils.unescapeJson;
-
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -22,6 +19,7 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainRequest;
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainResponse;
 import org.opensearch.agent.tools.utils.ClusterStatsUtil;
+import org.opensearch.agent.tools.utils.RCADoc;
 import org.opensearch.client.Client;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.action.ActionListener;
@@ -36,7 +34,6 @@ import org.opensearch.ml.common.spi.tools.Tool;
 import org.opensearch.ml.common.spi.tools.ToolAnnotation;
 import org.opensearch.ml.common.transport.prediction.MLPredictionTaskAction;
 import org.opensearch.ml.common.transport.prediction.MLPredictionTaskRequest;
-import org.opensearch.ml.common.utils.StringUtils;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -94,16 +91,14 @@ public class RCATool implements Tool {
     @SuppressWarnings("unchecked")
     public <T> void runOption1(Map<String, String> parameters, ActionListener<T> listener) {
         String knowledge = parameters.get(KNOWLEDGE_BASE_TOOL_OUTPUT_FIELD);
-        knowledge = unescapeJson(knowledge);
-        Map<String, ?> knowledgeBase = StringUtils.gson.fromJson(knowledge, Map.class);
-        List<Map<String, String>> causes = (List<Map<String, String>>) knowledgeBase.get("causes");
-        Set<String> apis = causes.stream().map(c -> c.get(API_URL_FIELD)).collect(Collectors.toSet());
+        RCADoc rcaDoc = new RCADoc(knowledge);
+        Set<String> apis = rcaDoc.causes.stream().map(c -> c.apiUrl).collect(Collectors.toSet());
         ActionListener<Map<String, String>> apiListener = new ActionListener<>() {
             @Override
             public void onResponse(Map<String, String> apiToResponse) {
-                causes.forEach(cause -> cause.put("response", apiToResponse.get(cause.get(API_URL_FIELD))));
+                rcaDoc.causes.forEach(cause -> cause.response = apiToResponse.get(cause.apiUrl));
                 Map<String, String> LLMParams = new java.util.HashMap<>(
-                    Map.of("phenomenon", (String) knowledgeBase.get("phenomenon"), "causes", StringUtils.gson.toJson(causes))
+                    Map.of("phenomenon", rcaDoc.phenomenon, "causes", rcaDoc.toString())
                 );
                 StringSubstitutor substitute = new StringSubstitutor(LLMParams, "${parameters.", "}");
                 String finalToolPrompt = substitute.replace(TOOL_PROMPT);
