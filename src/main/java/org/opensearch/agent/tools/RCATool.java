@@ -8,7 +8,6 @@ package org.opensearch.agent.tools;
 import static org.apache.commons.text.StringEscapeUtils.unescapeJson;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -79,21 +78,6 @@ public class RCATool implements Tool {
         this.isLLMOption = isLLMOption;
     }
 
-    @Override
-    public String getType() {
-        return TYPE;
-    }
-
-    @Override
-    public String getVersion() {
-        return null;
-    }
-
-    @Override
-    public boolean validate(Map<String, String> parameters) {
-        return parameters != null;
-    }
-
     public static final String TOOL_PROMPT =
         "You are going to help find the root cause of the phenomenon from the several potential causes listed below. In this RCA process, for each cause, it usually needs to call an API to get some necessary information verify whether it's the right root cause. I've filled the related response for each cause, you should decide which cause are most possible to be the root cause based on these responses. \n\n"
             + "Human: PHENOMENON\n"
@@ -154,44 +138,57 @@ public class RCATool implements Tool {
     }
 
     @SuppressWarnings("unchecked")
-    public <T> void runOption2(Map<String, ?> knowledgeBase, ActionListener<T> listener) {
-        String phenomenon = (String) knowledgeBase.get("phenomenon");
-
-        // API response embedded vectors
+    public <T> void runOption2(Map<String, String> parameters, ActionListener<T> listener) {
+        String knowledge = parameters.get(KNOWLEDGE_BASE_TOOL_OUTPUT_FIELD);
+        knowledge = unescapeJson(knowledge);
+        Map<String, ?> knowledgeBase = StringUtils.gson.fromJson(knowledge, Map.class);
         List<Map<String, String>> causes = (List<Map<String, String>>) knowledgeBase.get("causes");
-        List<String> responses = causes.stream()
-            .map(cause -> cause.get("response"))
-            .collect(Collectors.toList());
-        List<RealVector> responseVectors = getEmbeddedVector(responses);
+        List<String> apiList = causes.stream().map(cause -> cause.get(API_URL_FIELD)).distinct().collect(Collectors.toList());
+        final GroupedActionListener<Pair<String, String>> groupedListener = new GroupedActionListener<>(ActionListener.wrap(responses -> {
+            Map<String, String> apiToResponse = responses.stream().collect(Collectors.toMap(Pair::getKey, Pair::getValue));
+            String phenomenon = (String) knowledgeBase.get("phenomenon");
 
-        // expected API response embedded vectors
-        List<String> expectedResponses = causes.stream()
-            .map(cause -> cause.get("expected_response"))
-            .collect(Collectors.toList());
-        List<RealVector> expectedResponseVectors = getEmbeddedVector(expectedResponses);
+            // API response embedded vectors
+            Map<String, RealVector> responseVectorMap = apiToResponse.entrySet().stream()
+                .collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    entry -> {
+                        List<RealVector> responseVector = getEmbeddedVector(List.of(entry.getValue()));
+                        return responseVector.get(0);
+                    }
+                ));
 
-        Map<String, Double> dotProductMap = IntStream.range(0, causes.size())
-            .boxed()
-            .collect(Collectors.toMap(
-                i -> causes.get(i).get("reason"),
-                i -> responseVectors.get(i).dotProduct(expectedResponseVectors.get(i))
-            ));
+            // expected API response embedded vectors
+            List<String> expectedResponses = causes.stream()
+                .map(cause -> cause.get("expected_response"))
+                .collect(Collectors.toList());
+            List<RealVector> expectedResponseVectors = getEmbeddedVector(expectedResponses);
 
-        Optional<Map.Entry<String, Double>> mapEntry =
-            dotProductMap.entrySet().stream()
-                .max(Map.Entry.comparingByValue());
+            Map<String, Double> dotProductMap = IntStream.range(0, causes.size())
+                .boxed()
+                .collect(Collectors.toMap(
+                    i -> causes.get(i).get("reason"),
+                    i -> responseVectorMap.get(causes.get(i).get(API_URL_FIELD)).dotProduct(expectedResponseVectors.get(i))
+                ));
 
-        String rootCauseReason = "No root cause found";
-        if (mapEntry.isPresent()) {
-            Entry<String, Double> entry = mapEntry.get();
-            log.info("kNN RCA reason: {} with score: {} for the phenomenon: {}",
-                entry.getKey(), entry.getValue(), phenomenon);
-            rootCauseReason = entry.getKey();
-        } else {
-            log.warn("No root cause found for the phenomenon: {}", phenomenon);
-        }
+            Optional<Map.Entry<String, Double>> mapEntry =
+                dotProductMap.entrySet().stream()
+                    .max(Map.Entry.comparingByValue());
 
-        listener.onResponse((T) rootCauseReason);
+            String rootCauseReason = "No root cause found";
+            if (mapEntry.isPresent()) {
+                Entry<String, Double> entry = mapEntry.get();
+                log.info("kNN RCA reason: {} with score: {} for the phenomenon: {}",
+                    entry.getKey(), entry.getValue(), phenomenon);
+                rootCauseReason = entry.getKey();
+            } else {
+                log.warn("No root cause found for the phenomenon: {}", phenomenon);
+            }
+
+            listener.onResponse((T) rootCauseReason);
+        }, listener::onFailure), apiList.size());
+        // TODO: support different parameters for different apis
+        apiList.forEach(api -> invokeAPI(api, parameters, groupedListener));
     }
 
     /**
@@ -205,21 +202,10 @@ public class RCATool implements Tool {
     @Override
     public <T> void run(Map<String, String> parameters, ActionListener<T> listener) {
         try {
-            String knowledge = parameters.get(KNOWLEDGE_BASE_TOOL_OUTPUT_FIELD);
-            knowledge = unescapeJson(knowledge);
-            Map<String, ?> knowledgeBase = StringUtils.gson.fromJson(knowledge, Map.class);
-            List<Map<String, String>> causes = (List<Map<String, String>>) knowledgeBase.get("causes");
-            Map<String, String> apiToResponse = causes
-                .stream()
-                .map(c -> c.get(API_URL_FIELD))
-                .distinct()
-                .collect(Collectors.toMap(url -> url, url -> invokeAPI(url, parameters)));
-            causes.forEach(cause -> cause.put("response", apiToResponse.get(cause.get(API_URL_FIELD))));
-
             if (isLLMOption) {
-                runOption1(knowledgeBase, listener);
+                runOption1(parameters, listener);
             } else {
-                runOption2(knowledgeBase, listener);
+                runOption2(parameters, listener);
             }
         } catch (Exception e) {
             log.error("Failed to run RCA tool", e);
