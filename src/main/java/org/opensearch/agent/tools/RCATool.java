@@ -29,6 +29,7 @@ import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainRe
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplainResponse;
 import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.agent.tools.utils.ClusterStatsUtil;
+import org.opensearch.agent.tools.utils.RCACause;
 import org.opensearch.agent.tools.utils.RCADoc;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.routing.allocation.NodeAllocationResult;
@@ -113,13 +114,12 @@ public class RCATool implements Tool {
 
     @SuppressWarnings("unchecked")
     public <T> void runOption1(
-        String phenomenon,
-        List<Map<String, String>> causes,
+        RCADoc rcaDoc,
         Map<String, String> apiToResponse,
         ActionListener<T> listener
     ) {
         Map<String, String> LLMParams = new java.util.HashMap<>(
-            Map.of("phenomenon", phenomenon, "causes", StringUtils.gson.toJson(causes), "responses", StringUtils.gson.toJson(apiToResponse))
+            Map.of("phenomenon", rcaDoc.getPhenomenon(), "causes", rcaDoc.toString(), "responses", StringUtils.gson.toJson(apiToResponse))
         );
         StringSubstitutor substitute = new StringSubstitutor(LLMParams, "${parameters.", "}");
         String finalToolPrompt = substitute.replace(TOOL_PROMPT);
@@ -146,8 +146,7 @@ public class RCATool implements Tool {
 
     @SuppressWarnings("unchecked")
     public <T> void runOption2(
-        String phenomenon,
-        List<Map<String, String>> causes,
+        RCADoc rcaDoc,
         Map<String, String> apiToResponse,
         ActionListener<T> listener
     ) {
@@ -155,14 +154,14 @@ public class RCATool implements Tool {
         List<RealVector> responseVectors = getEmbeddedVector(responses);
 
         // expected API response embedded vectors
-        List<String> expectedResponses = causes.stream().map(cause -> cause.get("expected_response")).collect(Collectors.toList());
+        List<String> expectedResponses = rcaDoc.causes.stream().map(RCACause::getExpectedResponse).collect(Collectors.toList());
         List<RealVector> expectedResponseVectors = getEmbeddedVector(expectedResponses);
 
         Map<String, Double> dotProductMap = IntStream
-            .range(0, causes.size())
+            .range(0, rcaDoc.causes.size())
             .boxed()
             .collect(
-                Collectors.toMap(i -> causes.get(i).get("reason"), i -> responseVectors.get(0).dotProduct(expectedResponseVectors.get(i)))
+                Collectors.toMap(i -> rcaDoc.causes.get(i).getReason(), i -> responseVectors.get(0).dotProduct(expectedResponseVectors.get(i)))
             );
 
         Optional<Map.Entry<String, Double>> mapEntry = dotProductMap.entrySet().stream().max(Map.Entry.comparingByValue());
@@ -170,10 +169,10 @@ public class RCATool implements Tool {
         String rootCauseReason = "No root cause found";
         if (mapEntry.isPresent()) {
             Entry<String, Double> entry = mapEntry.get();
-            log.info("kNN RCA reason: {} with score: {} for the phenomenon: {}", entry.getKey(), entry.getValue(), phenomenon);
+            log.info("kNN RCA reason: {} with score: {} for the phenomenon: {}", entry.getKey(), entry.getValue(), rcaDoc.getPhenomenon());
             rootCauseReason = entry.getKey();
         } else {
-            log.warn("No root cause found for the phenomenon: {}", phenomenon);
+            log.warn("No root cause found for the phenomenon: {}", rcaDoc.getPhenomenon());
         }
 
         listener.onResponse((T) rootCauseReason);
@@ -192,19 +191,17 @@ public class RCATool implements Tool {
     public <T> void run(Map<String, String> parameters, ActionListener<T> listener) {
         try {
             String knowledge = parameters.get(KNOWLEDGE_BASE_TOOL_OUTPUT_FIELD);
-            knowledge = unescapeJson(knowledge);
-            Map<String, ?> knowledgeBase = StringUtils.gson.fromJson(knowledge, Map.class);
-            String phenomenon = (String) knowledgeBase.get("phenomenon");
-            List<Map<String, String>> causes = (List<Map<String, String>>) knowledgeBase.get("causes");
-            List<String> apiList = causes.stream().map(cause -> cause.get(API_URL_FIELD)).distinct().collect(Collectors.toList());
+            RCADoc rcaDoc = new RCADoc(knowledge);
+
+            List<String> apiList = rcaDoc.causes.stream().map(RCACause::getApiUrl).distinct().collect(Collectors.toList());
 
             final GroupedActionListener<Pair<String, String>> groupedListener = new GroupedActionListener<>(
                 ActionListener.wrap(responses -> {
                     Map<String, String> apiToResponse = responses.stream().collect(Collectors.toMap(Pair::getKey, Pair::getValue));
                     if (isLLMOption) {
-                        runOption1(phenomenon, causes, apiToResponse, listener);
+                        runOption1(rcaDoc, apiToResponse, listener);
                     } else {
-                        runOption2(phenomenon, causes, apiToResponse, listener);
+                        runOption2(rcaDoc, apiToResponse, listener);
                     }
                 }, listener::onFailure),
                 apiList.size()

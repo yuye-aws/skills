@@ -37,7 +37,6 @@ public class RCADoc {
     public String toString() {
         StringBuilder json = new StringBuilder();
         json.append("{");
-        json.append("\"phenomenon\":\"").append(escapeJson(phenomenon)).append("\",");
         json.append("\"causes\": [");
         for (int i = 0; i < causes.size(); i++) {
             json.append(causes.get(i).toString());
